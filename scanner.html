@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ระบบสแกนใบหน้า | สพป.ร้อยเอ็ด เขต 2</title>
+<script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<style>
+:root{--navy:#102544;--blue:#1c4778;--gold:#d7ad59;--bg:#f3f6fb}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Arial,'Noto Sans Thai',sans-serif;color:#1c2d43}
+header{background:linear-gradient(115deg,#0d203b,#214d7c);color:#fff;padding:20px;text-align:center}
+main{max-width:760px;margin:22px auto;padding:0 14px}.panel{background:#fff;border-radius:16px;padding:20px;box-shadow:0 7px 24px #1d35570d}
+h2{margin:0 0 14px}.videoBox{background:#0d1c30;border-radius:14px;overflow:hidden;min-height:280px;display:grid;place-items:center;color:#d9e7f8}
+video{width:100%;max-height:480px;object-fit:cover;transform:scaleX(-1);display:none}
+button{border:0;border-radius:10px;padding:12px 17px;margin:8px 6px 0 0;background:var(--blue);color:#fff;font-weight:700;cursor:pointer}
+button.gold{background:var(--gold);color:#172b45}button.light{background:#e9eff7;color:#19385e}
+button:disabled{opacity:.5;cursor:not-allowed}.status{margin-top:14px;padding:13px;border-radius:10px;background:#eef3f9;white-space:pre-line}
+.status.bad{background:#fdecec;color:#a11}.status.ok{background:#e9f7ef;color:#17633a}.muted{color:#718096;font-size:14px}
+</style></head><body>
+<header><h1>ระบบสแกนใบหน้าลงเวลาปฏิบัติราชการ</h1><div>สำนักงานเขตพื้นที่การศึกษาประถมศึกษาร้อยเอ็ด เขต 2</div></header>
+<main><section class="panel">
+<h2 id="heading">เตรียมระบบสแกนใบหน้า</h2>
+<p class="muted" id="instruction">กรุณาอนุญาตการใช้กล้องและตำแหน่งที่ตั้งเมื่อเบราว์เซอร์ร้องขอ</p>
+<div class="videoBox"><div id="placeholder">ระบบตรวจสอบใบหน้า<br>กด “เปิดกล้องหน้า” เพื่อเริ่มต้น</div><video id="video" autoplay muted playsinline></video></div>
+<button id="openBtn" onclick="startCamera()">เปิดกล้องหน้า</button>
+<button class="light" onclick="stopCamera()">ปิดกล้อง</button>
+<button class="gold" id="submitBtn" onclick="processFace()" disabled>ตรวจจับและยืนยัน</button>
+<div id="status" class="status">กำลังตรวจสอบการตั้งค่า...</div>
+<p class="muted">กล้องจะทำงานบนหน้านี้โดยตรง ไม่ฝังอยู่ใน iframe ของ Apps Script</p>
+</section></main>
+<script>
+const p=new URLSearchParams(location.search);
+const mode=p.get('mode')||'attendance', gas=p.get('gas')||'', personId=p.get('id')||'', adminToken=p.get('token')||'';
+const MODEL='https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+let stream=null, modelsReady=false, busy=false;
+const $=id=>document.getElementById(id);
+function status(t,ok){$('status').textContent=t;$('status').className='status '+(ok?'ok':'bad');}
+function stopCamera(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('video').srcObject=null;$('video').style.display='none';$('placeholder').style.display='block';$('submitBtn').disabled=true;}
+async function startCamera(){
+ try{
+  if(!gas.startsWith('https://script.google.com/'))throw Error('ไม่พบ URL Google Apps Script ที่ถูกต้อง');
+  if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw Error('ต้องเปิดหน้าสแกนผ่าน HTTPS และใช้เบราว์เซอร์ที่รองรับกล้อง');
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'user'},width:{ideal:640},height:{ideal:480}}});
+  $('video').srcObject=stream;$('video').style.display='block';$('placeholder').style.display='none';
+  await $('video').play();
+  if(!$('video').videoWidth)await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('กล้องยังไม่พร้อม')),12000);$('video').addEventListener('loadeddata',()=>{clearTimeout(t);resolve()},{once:true});});
+  await loadModels();$('submitBtn').disabled=false;status('กล้องพร้อมแล้ว กรุณาจัดใบหน้าให้อยู่กลางภาพ',true);
+ }catch(e){stopCamera();status('เปิดกล้องหรือเตรียมระบบไม่สำเร็จ: '+e.message,false);}
+}
+async function loadModels(){
+ if(modelsReady)return;if(!window.faceapi)throw Error('โหลด face-api.js ไม่สำเร็จ');
+ await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL);
+ await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL);
+ await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL);modelsReady=true;
+}
+function gasJsonp(action,args){
+ return new Promise((resolve,reject)=>{
+  const cb='ret2cb_'+Date.now()+'_'+Math.floor(Math.random()*1e6);
+  const script=document.createElement('script');let timer=setTimeout(()=>finish(Error('หมดเวลารอการตอบกลับจาก Apps Script')),30000);
+  function finish(err,data){clearTimeout(timer);delete window[cb];script.remove();err?reject(err):resolve(data);}
+  window[cb]=data=>finish(null,data);
+  script.onerror=()=>finish(Error('เชื่อมต่อ Google Apps Script ไม่สำเร็จ'));
+  const query=new URLSearchParams({api:'faceScanner',action,args:JSON.stringify(args),callback:cb});
+  script.src=gas+(gas.includes('?')?'&':'?')+query.toString();
+  document.body.appendChild(script);
+ });
+}
+async function processFace(){
+ if(busy)return;busy=true;$('submitBtn').disabled=true;
+ try{
+  if(!stream)throw Error('กรุณาเปิดกล้องก่อน');
+  await loadModels();status('กำลังตรวจจับใบหน้า...',true);
+  const detection=await faceapi.detectSingleFace($('video'),new faceapi.SsdMobilenetv1Options({minConfidence:.35})).withFaceLandmarks().withFaceDescriptor();
+  if(!detection)throw Error('ไม่พบใบหน้า กรุณามองตรงและเพิ่มแสงสว่าง');
+  let result;
+  if(mode==='register'){
+   if(!personId||!adminToken)throw Error('ข้อมูลผู้ลงทะเบียนไม่ครบ กรุณากลับไปหน้า Admin แล้วเริ่มใหม่');
+   status('พบใบหน้าแล้ว กำลังบันทึกทะเบียนใบหน้า...',true);
+   result=await gasJsonp('adminRegisterFace',[adminToken,personId,Array.from(detection.descriptor),null]);
+  }else{
+   status('พบใบหน้าแล้ว กำลังอ่านตำแหน่ง GPS...',true);
+   const geo=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(
+    x=>resolve({lat:x.coords.latitude,lng:x.coords.longitude,accuracy:x.coords.accuracy}),
+    e=>reject(Error('อ่าน GPS ไม่สำเร็จ: '+e.message)),
+    {enableHighAccuracy:true,timeout:20000,maximumAge:0}));
+   status('กำลังตรวจสอบใบหน้าและบันทึกเวลา...',true);
+   result=await gasJsonp('recordAttendance',[Array.from(detection.descriptor),geo.lat,geo.lng,geo.accuracy,navigator.userAgent,'FACE']);
+  }
+  if(!result||!result.ok)throw Error(result?.error||'Apps Script ไม่ยืนยันผลการทำงาน');
+  const d=result.data||{};
+  if(mode==='register')status('ลงทะเบียนใบหน้าเรียบร้อยแล้วสำหรับรหัส '+personId+'\nสามารถปิดแท็บนี้และกลับไปหน้า Admin ได้',true);
+  else status((d.name||'')+'\n'+(d.status||'')+'\nเวลา '+(d.time||'')+'\n'+(d.kind==='in'?'ลงเวลามาปฏิบัติราชการ':'ลงเวลาเลิกปฏิบัติราชการ')+'\nบันทึกสำเร็จ',true);
+  stopCamera();
+ }catch(e){status(e.message||String(e),false);}
+ finally{busy=false;$('submitBtn').disabled=!stream;}
+}
+if(mode==='register'){$('heading').textContent='ลงทะเบียนใบหน้าบุคลากร';$('instruction').textContent='กรุณาจัดใบหน้าให้อยู่กลางกรอบ แล้วกดตรวจจับและยืนยัน';$('submitBtn').textContent='ตรวจจับและบันทึกใบหน้า';}
+else{$('heading').textContent='สแกนใบหน้าเพื่อลงเวลา';$('submitBtn').textContent='สแกนและลงเวลา';}
+if(!gas)status('ลิงก์นี้ขาด URL ของ Apps Script กรุณาเปิดจากหน้าเว็บระบบหลัก',false);
+</script></body></html>
